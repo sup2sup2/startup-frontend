@@ -36,7 +36,16 @@ export default function RootLayout({
         />
       </head>
       
-      <body className="min-h-full flex flex-col">{children}</body>
+      <body className="min-h-full flex flex-col">
+        {children}
+        {/* 🌟 개발 환경에서만 모바일 디버깅용 Eruda 표시 */}
+        {process.env.NODE_ENV === "development" && (
+          <>
+            <script src="https://cdn.jsdelivr.net/npm/eruda"></script>
+            <script dangerouslySetInnerHTML={{ __html: 'eruda.init();' }}></script>
+          </>
+        )}
+      </body>
     </html>
-  );
+    );
 }
