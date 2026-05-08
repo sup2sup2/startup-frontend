@@ -678,7 +678,7 @@ export default function Home() {
                 </h3>
                 
                 {/* 나의 신고 기록 리스트 부분 */}
-                {reports.length === 0 ? (
+                {reports.filter((r) => r.loginId === user?.loginId).length === 0 ? (
                   <div className="text-center py-10 bg-sky-50/50 rounded-2xl border-2 border-dashed border-sky-100">
                     <div className="text-4xl mb-2">📭</div>
                     <p className="text-sky-700 font-bold text-sm">아직 등록된 신고 기록이 없습니다</p>
@@ -686,7 +686,7 @@ export default function Home() {
                   </div>
                 ) : (
                   <div className="space-y-3 max-h-[400px] overflow-y-auto pr-1">
-                    {reports.map((report) => (
+                    {reports.filter((r) => r.loginId === user?.loginId).map((report) => (
                       <div key={report.id} className="border-2 border-sky-50 rounded-2xl p-3 flex gap-3 bg-gradient-to-br from-sky-50/50 to-white hover:shadow-md transition-shadow">
                         {report.imageUrl && (
                           <img 
