@@ -2,14 +2,14 @@
 
 import { useState, useEffect, ChangeEvent } from "react";
 import { Map, MapMarker } from "react-kakao-maps-sdk";
+import Image from "next/image";
 
 interface Report {
   id: number;
   latitude: number;
   longitude: number;
   imageUrl: string;
-  description: string; // 🌟 인터페이스에 설명 추가
-  loginId?: string;
+  description: string;
 }
 
 // 🌟 날씨 데이터를 위한 인터페이스
@@ -18,12 +18,25 @@ interface WeatherData {
   rainfall: number; // 시간당 강우량 (mm)
 }
 
+interface RainfallRow {
+  GU_NM: string;
+  RN_10M: string | number;
+}
+
+interface LoginResponse {
+  message: string;
+  token: string;
+  loginId: string;
+  points: number;
+}
+
 export default function Home() {
   const [location, setLocation] = useState({ lat: 37.5665, lng: 126.9780 });
   const [status, setStatus] = useState("");
   const [imagePreview, setImagePreview] = useState("");
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [reports, setReports] = useState<Report[]>([]);
+  const [myReports, setMyReports] = useState<Report[]>([]);
   const [description, setDescription] = useState(""); 
   
   // 🌟 처음에 사이트에 들어오면 'weather' 탭을 보여줍니다.
@@ -37,25 +50,19 @@ export default function Home() {
   const [isIdChecked, setIsIdChecked] = useState(false);
   
   const [user, setUser] = useState<{loginId: string, points: number} | null>(null);
+  const [authToken, setAuthToken] = useState("");
   
   const [editingId, setEditingId] = useState<number | null>(null); // 현재 수정 중인 신고글 ID
   const [editDescription, setEditDescription] = useState(""); // 수정 중인 입력칸 내용
   // 초기 상태를 빈 배열로 두고, 로딩 상태를 추가합니다.
   const [weathers, setWeathers] = useState<WeatherData[]>([]);
   const [isWeatherLoading, setIsWeatherLoading] = useState(true);
+  const [weatherError, setWeatherError] = useState("");
+  const [isLocationReady, setIsLocationReady] = useState(false);
 
   const [showWarningModal, setShowWarningModal] = useState(false);
   
-  const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://192.168.0.10:8080";
-
-
-  const sanitizeHTML = (text: string) => {
-  return text
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#x27;");
-  };
+  const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "";
 
   const fetchReports = async () => {
     try {
@@ -68,6 +75,25 @@ export default function Home() {
       console.error("데이터 불러오기 실패:", error);
     }
   };
+
+  const fetchMyReports = async (token: string) => {
+    if (!token) return;
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/reports/mine`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (response.ok) {
+        setMyReports(await response.json());
+      } else if (response.status === 401) {
+        sessionStorage.removeItem("auth");
+        setAuthToken("");
+        setUser(null);
+        setMyReports([]);
+      }
+    } catch (error) {
+      console.error("내 신고 내역 불러오기 실패:", error);
+    }
+  };
   // 🌟 [추가] 신고 내역 수정 함수 (PUT)
   const handleEditReport = async (id: number) => {
     if (editDescription.length > 100) {
@@ -78,14 +104,18 @@ export default function Home() {
     try {
       const response = await fetch(`${API_BASE_URL}/api/reports/${id}`, {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${authToken}`,
+        },
         body: JSON.stringify({ description: editDescription }),
       });
 
       if (response.ok) {
         alert("성공적으로 수정되었습니다.");
         setEditingId(null); // 수정 완료 후 다시 일반 모드로 변경
-        fetchReports(); // 목록 새로고침
+        fetchReports();
+        fetchMyReports(authToken);
       } else {
         alert("수정에 실패했습니다.");
       }
@@ -101,11 +131,13 @@ export default function Home() {
     try {
       const response = await fetch(`${API_BASE_URL}/api/reports/${id}`, {
         method: "DELETE",
+        headers: { Authorization: `Bearer ${authToken}` },
       });
 
       if (response.ok) {
         alert("완전히 삭제되었습니다.");
-        fetchReports(); // 삭제 후 목록 새로고침
+        fetchReports();
+        fetchMyReports(authToken);
       } else {
         alert("삭제에 실패했습니다.");
       }
@@ -117,36 +149,38 @@ export default function Home() {
   // 🌟 2. 서울시 실시간 강우량 데이터를 불러오는 함수 추가
   const fetchRealTimeWeather = async () => {
     setIsWeatherLoading(true);
+    setWeatherError("");
     try {
       // 🌟 백엔드 프록시로 변경 - API 키 노출 없음, HTTPS 호환
     const response = await fetch(`${API_BASE_URL}/api/weather/rainfall`);
+    if (!response.ok) throw new Error(`강우량 API 오류: ${response.status}`);
     const data = await response.json();
 
 
       if (data.ListRainfallService && data.ListRainfallService.row) {
-        const rows = data.ListRainfallService.row;
+        const rows: RainfallRow[] = data.ListRainfallService.row;
 
         // API에서 관측소별로 데이터를 주므로, '구 이름'을 기준으로 정리합니다.
         // RAINFALL10은 10분당 강우량이므로, 대략적인 시간당 강우량을 위해 * 6을 해줍니다.
-        const realTimeData = rows.map((item: any) => ({
+        const realTimeData = rows.map((item) => ({
           district: item.GU_NM,
           rainfall: Math.floor(Number(item.RN_10M) * 6)
         }));
 
         // 구 이름이 중복되는 경우 하나만 남기기 (간단한 필터링)
-        const uniqueData = Array.from(new globalThis.Map<string, WeatherData>(realTimeData.map((item: any) => [item.district, item] as [string, WeatherData])).values());
+        const uniqueData = Array.from(new globalThis.Map<string, WeatherData>(realTimeData.map((item) => [item.district, item])).values());
 
         // 서울시 25개 구 중 비가 많이 오는 순서대로 정렬해서 보여주기
         uniqueData.sort((a, b) => b.rainfall - a.rainfall);
 
         setWeathers(uniqueData);
+      } else {
+        throw new Error("강우량 응답 형식이 올바르지 않습니다.");
       }
     } catch (error) {
       console.error("날씨 데이터를 불러오는데 실패했습니다.", error);
-      // API 호출 실패 시 에러 방지용 임시 데이터
-      setWeathers([
-        { district: "서울 전역", rainfall: 0 }
-      ]);
+      setWeathers([]);
+      setWeatherError("강우량 정보를 불러오지 못했습니다. 잠시 후 다시 시도해주세요.");
     } finally {
       setIsWeatherLoading(false);
     }
@@ -154,12 +188,37 @@ export default function Home() {
 
   // 🌟 3. 컴포넌트가 처음 화면에 나타날 때 데이터들을 불러옵니다.
   useEffect(() => {
-    fetchReports();
-    fetchRealTimeWeather();
-    
+    const initialLoad = window.setTimeout(() => {
+      fetchReports();
+      fetchRealTimeWeather();
+    }, 0);
+
     // (선택사항) 10분마다 강우량 데이터를 자동으로 새로고침합니다.
     const interval = setInterval(fetchRealTimeWeather, 10 * 60 * 1000);
-    return () => clearInterval(interval);
+    return () => {
+      clearTimeout(initialLoad);
+      clearInterval(interval);
+    };
+    // 초기 마운트와 주기 갱신에서만 실행합니다.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const savedAuth = sessionStorage.getItem("auth");
+    if (!savedAuth) return;
+    try {
+      const parsed = JSON.parse(savedAuth) as { token: string; loginId: string; points: number };
+      if (!parsed.token || !parsed.loginId) throw new Error("잘못된 로그인 정보");
+      queueMicrotask(() => {
+        setAuthToken(parsed.token);
+        setUser({ loginId: parsed.loginId, points: parsed.points });
+        fetchMyReports(parsed.token);
+      });
+    } catch {
+      sessionStorage.removeItem("auth");
+    }
+    // 브라우저 세션은 첫 마운트에서 한 번만 복원합니다.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
 
@@ -167,6 +226,7 @@ export default function Home() {
   const handleImageChange = (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
+      setIsLocationReady(false);
       setUploadFile(file);
       setImagePreview(URL.createObjectURL(file));
       setStatus("사진 확인됨. 현재 위치를 매칭하는 중...");
@@ -175,11 +235,17 @@ export default function Home() {
         navigator.geolocation.getCurrentPosition(
           (position) => {
             setLocation({ lat: position.coords.latitude, lng: position.coords.longitude });
+            setIsLocationReady(true);
             setStatus("위치 매칭 완료! 내용을 입력하고 신고하세요. ✅");
           },
-          (error) => { setStatus("위치를 가져오지 못했습니다. (GPS 확인)"); },
+          () => {
+            setIsLocationReady(false);
+            setStatus("위치를 가져오지 못했습니다. GPS 권한을 확인해주세요.");
+          },
           { enableHighAccuracy: true }
         );
+      } else {
+        setStatus("이 브라우저에서는 위치 기능을 사용할 수 없습니다.");
       }
     }
   };
@@ -193,52 +259,52 @@ export default function Home() {
       return;
     }
 
-    if (!uploadFile || location.lat === 0) {
+    if (!uploadFile || !isLocationReady) {
       alert("사진과 위치 정보가 필요합니다!");
       return;
     }
     
-    // 🌟 XSS 공격 방어 적용
-    const safeDescription = sanitizeHTML(description);
-
     const formData = new FormData();
     formData.append("latitude", location.lat.toString());
     formData.append("longitude", location.lng.toString());
     formData.append("image", uploadFile);
-    formData.append("description", safeDescription); // 🌟 안전한 텍스트로 교체
-    formData.append("loginId", user.loginId);
+    formData.append("description", description);
 
     try {
       setStatus("신고 접수 중...");
       const response = await fetch(`${API_BASE_URL}/api/reports`, {
         method: "POST",
+        headers: { Authorization: `Bearer ${authToken}` },
         body: formData,
       });
 
       if (response.ok) {
-        // 🌟 1. 새로고침 대신 상태만 업데이트!
-        alert("🚨 신고가 성공적으로 완료되었습니다! 100포인트가 적립되었습니다.");
-
-        // 🌟 2. 프론트엔드에서 포인트 즉시 올리기 (백엔드 DB엔 이미 올라갔으므로 화면만 동기화)
-        setUser({
-          ...user,
-          points: user.points + 100
-        });
+        const result = await response.json() as { message: string; points: number };
+        alert("🚨 " + result.message);
+        const updatedUser = { ...user, points: result.points };
+        setUser(updatedUser);
+        sessionStorage.setItem("auth", JSON.stringify({
+          token: authToken,
+          loginId: updatedUser.loginId,
+          points: updatedUser.points,
+        }));
 
         // 🌟 3. 입력 필드 초기화 (신고가 끝났으니 칸 비우기)
         setImagePreview("");
         setUploadFile(null);
         setDescription("");
+        setIsLocationReady(false);
         setStatus("추가 신고 준비 완료 ✅");
 
         // 🌟 4. 지도에 새 마커 표시를 위해 목록 새로고침 (함수 재실행)
-        fetchReports(); 
+        fetchReports();
+        fetchMyReports(authToken);
 
       } else {
         const errorMsg = await response.text();
         alert("🚨 실패: " + errorMsg);
       }
-    } catch (error) {
+    } catch {
       setStatus("❌ 전송 실패");
       alert("서버 연결에 실패했습니다.");
     }
@@ -258,21 +324,24 @@ export default function Home() {
         body: JSON.stringify({ loginId, password }),
       });
 
-      // 백엔드에서 보낸 메시지(String)를 읽어옵니다.
-      const message = await response.text();
-
       if (response.ok) {
-        // 로그인 성공 시 (HTTP 200)
-        alert("🎉 " + message);
-        // 로그인 성공 시 user 정보를 세팅! (포인트는 임시로 0점 시작)
-        setUser({ loginId: loginId, points: 0 });
-        
-        // (참고: 실제 앱이라면 여기서 받은 토큰이나 회원 정보를 저장해야 합니다)
+        const result = await response.json() as LoginResponse;
+        const loggedInUser = { loginId: result.loginId, points: result.points };
+        setUser(loggedInUser);
+        setAuthToken(result.token);
+        sessionStorage.setItem("auth", JSON.stringify({
+          token: result.token,
+          loginId: result.loginId,
+          points: result.points,
+        }));
+        fetchMyReports(result.token);
+        setPassword("");
+        alert("🎉 " + result.message);
       } else {
-        // 로그인 실패, 계정 잠김 등 (HTTP 401, 403)
+        const message = await response.text();
         alert("🚨 " + message); 
       }
-    } catch (error) {
+    } catch {
       alert("서버와 연결할 수 없습니다. 서버가 켜져 있는지 확인해주세요.");
     }
   };
@@ -314,7 +383,7 @@ export default function Home() {
       } else {
         alert("🚨 " + message); // "이미 존재하는 아이디입니다" 등
       }
-    } catch (error) {
+    } catch {
       alert("서버와 연결할 수 없습니다.");
     }
   };
@@ -332,7 +401,7 @@ export default function Home() {
 
     try {
       // 🚨 백엔드 API 주소에 맞게 수정이 필요할 수 있습니다. (예: /api/members/check-id)
-      const response = await fetch(`${API_BASE_URL}/api/members/check-id?loginId=${signupId}`);
+      const response = await fetch(`${API_BASE_URL}/api/members/check-id?loginId=${encodeURIComponent(signupId)}`);
       
       if (response.ok) {
         alert("사용 가능한 아이디입니다! 🟢");
@@ -341,7 +410,7 @@ export default function Home() {
         alert("이미 사용 중인 아이디입니다. 🔴");
         setIsIdChecked(false);
       }
-    } catch (error) {
+    } catch {
       alert("서버 연결 실패. (임시로 중복확인 통과 처리합니다)");
       // API가 아직 없다면 테스트를 위해 임시로 true 처리하려면 아래 주석 해제
       // setIsIdChecked(true); 
@@ -409,6 +478,17 @@ export default function Home() {
               <p className="text-sky-600 font-bold">기상청 데이터를 불러오는 중...</p>
               <p className="text-sky-400 text-xs mt-1">잠시만 기다려주세요 🐾</p>
             </div>
+          ) : weatherError ? (
+            <div className="py-12 px-6 flex flex-col items-center bg-white rounded-3xl w-full shadow-sm text-center">
+              <div className="text-4xl mb-3">⚠️</div>
+              <p className="text-rose-600 font-bold">{weatherError}</p>
+              <button
+                onClick={fetchRealTimeWeather}
+                className="mt-4 bg-sky-500 text-white px-4 py-2 rounded-xl font-bold"
+              >
+                다시 시도
+              </button>
+            </div>
           ) : (
             <div className="w-full flex flex-col gap-3">
               {/* 🌟 로딩이 끝나면 실제 날씨 데이터를 그려줍니다 */}
@@ -455,7 +535,7 @@ export default function Home() {
             <div className="text-3xl mb-2">📣</div>
             <p className="text-sm text-amber-900 font-bold leading-relaxed">
               위험 지역에 계신가요?<br/>
-              <span className="text-amber-700">'지도/신고'</span> 탭에서 막힌 하수구를 제보해주세요!
+              <span className="text-amber-700">&apos;지도/신고&apos;</span> 탭에서 막힌 하수구를 제보해주세요!
             </p>
           </div>
         </div>
@@ -487,7 +567,7 @@ export default function Home() {
           {/* 기존 지도 영역 */}
           <div className="w-full h-[350px] rounded-3xl overflow-hidden shadow-lg mb-6 border-[6px] border-white">
             <Map center={{ lat: location.lat, lng: location.lng }} style={{ width: "100%", height: "100%" }} level={3}>
-              {location.lat !== 37.5665 && (
+              {isLocationReady && (
                 <MapMarker position={{ lat: location.lat, lng: location.lng }}>
                   <div className="p-1 text-xs text-blue-600 font-bold">내 위치</div>
                 </MapMarker>
@@ -532,7 +612,7 @@ export default function Home() {
 
                 {imagePreview && (
                   <>
-                    <img src={imagePreview} alt="미리보기" className="w-full h-auto max-h-60 object-contain rounded-2xl shadow-sm border-2 border-sky-100 bg-gray-50" />
+                    <Image src={imagePreview} alt="미리보기" width={640} height={480} unoptimized className="w-full h-auto max-h-60 object-contain rounded-2xl shadow-sm border-2 border-sky-100 bg-gray-50" />
                     
                     <textarea
                       className="w-full border-2 border-sky-100 rounded-2xl p-4 h-32 focus:outline-none focus:ring-2 focus:ring-sky-400 focus:border-sky-300 text-gray-900 bg-sky-50/30 placeholder-gray-400 transition-all resize-none font-medium"
@@ -678,7 +758,7 @@ export default function Home() {
                 </h3>
                 
                 {/* 나의 신고 기록 리스트 부분 */}
-                {reports.filter((r) => r.loginId === user?.loginId).length === 0 ? (
+                {myReports.length === 0 ? (
                   <div className="text-center py-10 bg-sky-50/50 rounded-2xl border-2 border-dashed border-sky-100">
                     <div className="text-4xl mb-2">📭</div>
                     <p className="text-sky-700 font-bold text-sm">아직 등록된 신고 기록이 없습니다</p>
@@ -686,12 +766,15 @@ export default function Home() {
                   </div>
                 ) : (
                   <div className="space-y-3 max-h-[400px] overflow-y-auto pr-1">
-                    {reports.filter((r) => r.loginId === user?.loginId).map((report) => (
+                    {myReports.map((report) => (
                       <div key={report.id} className="border-2 border-sky-50 rounded-2xl p-3 flex gap-3 bg-gradient-to-br from-sky-50/50 to-white hover:shadow-md transition-shadow">
                         {report.imageUrl && (
-                          <img 
+                          <Image
                             src={report.imageUrl} 
                             alt="신고 사진" 
+                            width={80}
+                            height={80}
+                            unoptimized
                             className="w-20 h-20 object-cover rounded-2xl bg-gray-200 shadow-sm"
                             onError={(e) => (e.currentTarget.style.display = "none")}
                           />
@@ -760,7 +843,10 @@ export default function Home() {
               {/* 로그아웃 버튼 */}
               <button 
                 onClick={() => {
-                  setUser(null); 
+                  sessionStorage.removeItem("auth");
+                  setUser(null);
+                  setAuthToken("");
+                  setMyReports([]);
                   alert("로그아웃 되었습니다.");
                 }}
                 className="mt-2 mb-2 text-gray-400 text-sm font-bold hover:text-rose-500 transition-colors py-2"
